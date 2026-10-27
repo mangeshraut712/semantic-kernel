@@ -241,3 +241,38 @@ async def test_validate_server_url_returns_no_addresses_for_allowed_base_url():
 async def test_validate_server_url_returns_no_addresses_when_private_access_is_allowed():
     options = ServerUrlValidationOptions(allow_private_network_access=True)
     assert await validate_server_url("https://internal.example/api", options) == []
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://api.example.com/api/../admin/delete-all",
+        "https://api.example.com/api/v1/../../admin",
+        "https://api.example.com/api/%2e%2e/admin",
+        "https://api.example.com/api/%2E%2E/admin",
+    ],
+)
+async def test_validate_server_url_rejects_dot_segment_escape_of_path_prefix(url):
+    options = ServerUrlValidationOptions(allowed_base_urls=["https://api.example.com/api"])
+    with pytest.raises(FunctionExecutionException, match="does not match any of the allowed base URLs"):
+        await validate_server_url(url, options)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://api.example.com/api/./users",
+        "https://api.example.com/api/users",
+        "https://api.example.com/api",
+        "https://api.example.com/api/",
+    ],
+)
+async def test_validate_server_url_still_allows_normalized_paths_inside_prefix(url):
+    options = ServerUrlValidationOptions(allowed_base_urls=["https://api.example.com/api"])
+    assert await validate_server_url(url, options) == []
+
+
+async def test_validate_server_url_still_rejects_lookalike_prefix_without_separator():
+    options = ServerUrlValidationOptions(allowed_base_urls=["https://api.example.com/api"])
+    with pytest.raises(FunctionExecutionException, match="does not match any of the allowed base URLs"):
+        await validate_server_url("https://api.example.com/apiusers", options)

@@ -2,7 +2,7 @@
 
 import ipaddress
 from typing import Any
-from urllib.parse import ParseResult, urlparse
+from urllib.parse import ParseResult, unquote, urlparse
 
 from pydantic import Field
 
@@ -85,7 +85,56 @@ def _parse_absolute_url(url: str, option_name: str = "url") -> ParseResult:
 
     if not parsed_url.scheme or not parsed_url.netloc or not parsed_url.hostname:
         raise ValueError(f"Invalid {option_name}: {url}")
-    return parsed_url
+    return parsed_url._replace(path=_normalize_path(parsed_url.path))
+
+
+def _normalize_path(path: str) -> str:
+    """RFC 3986 §5.2.4 remove_dot_segments, plus fail-closed %2e decoding.
+
+    Empty segments (``//``) are preserved to match httpx. Only a segment that is
+    entirely ``.`` / ``..`` or their ``%2e`` encodings is special-cased; other
+    percent-encodings are left untouched.
+    """
+    if not path:
+        return "/"
+
+    # Decode only whole-segment %2e / %2E sequences before resolving dots.
+    raw_segments = path.split("/")
+    decoded: list[str] = []
+    for segment in raw_segments:
+        lower = segment.lower()
+        chunks = _chunk_percent2e(lower)
+        # chunks is empty when the segment is not a pure %2e run; all([]) is
+        # True in Python, so require a non-empty chunk list before decoding.
+        if chunks and all(part == "%2e" for part in chunks):
+            decoded.append("." * (len(lower) // 3))
+        else:
+            decoded.append(segment)
+
+    # RFC 3986 remove_dot_segments over the decoded segment list.
+    output: list[str] = []
+    for i, segment in enumerate(decoded):
+        if segment == ".":
+            continue
+        if segment == "..":
+            if output and output[-1] != "":
+                output.pop()
+            continue
+        # Preserve empty segments (leading slash + //) exactly as split produced them.
+        output.append(segment)
+
+    result = "/".join(output)
+    if path.startswith("/") and not result.startswith("/"):
+        result = "/" + result
+    return result or "/"
+
+
+def _chunk_percent2e(lower_segment: str) -> list[str]:
+    """Split a lowercased segment into successive '%2e' tokens, or []."""
+    if len(lower_segment) % 3 != 0:
+        return []
+    chunks = [lower_segment[i : i + 3] for i in range(0, len(lower_segment), 3)]
+    return chunks
 
 
 def _matches_allowed_base_url(url: ParseResult, allowed_base_urls: list[str]) -> bool:
